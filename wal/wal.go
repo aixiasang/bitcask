@@ -115,6 +115,37 @@ func (w *Wal) RestoreIndex(index index.Index) error {
 	for {
 		fmt.Printf("当前位置: %d\n", currentOffset)
 
+		// 读取记录类型字节
+		typeBuf := make([]byte, 1)
+		n, err := w.FileHandler.ReadAt(uint32(currentOffset), typeBuf)
+		if err != nil {
+			if err == io.EOF {
+				fmt.Println("文件读取完成")
+				break
+			}
+			return fmt.Errorf("读取记录类型失败: %v", err)
+		}
+		if n != 1 {
+			return fmt.Errorf("读取记录类型时获取到错误的字节数: %d", n)
+		}
+
+		recordType := record.RecordType(typeBuf[0])
+
+		// 检查是否是事务控制记录类型
+		if recordType == record.RecordTxnBegin || recordType == record.RecordTxnCommit || recordType == record.RecordTxnAbort {
+			// 事务控制记录只有类型和事务ID
+			// 跳过事务ID (4字节)
+			currentOffset += 1 + 4 // 记录类型(1字节) + 事务ID(4字节)
+			continue
+		}
+
+		// 如果不是事务控制记录，使用正常的记录解码
+		// 将文件指针重新定位
+		_, err = w.FileHandler.Seek(currentOffset, io.SeekStart)
+		if err != nil {
+			return fmt.Errorf("定位文件指针失败: %v", err)
+		}
+
 		// 解码记录
 		rec, err := record.DecodeStreamToRecord(w.FileHandler)
 		if err != nil {
@@ -134,7 +165,7 @@ func (w *Wal) RestoreIndex(index index.Index) error {
 
 		// 根据记录类型更新索引
 		switch rec.RecordType {
-		case record.RecordUpdate:
+		case record.RecordUpdate, record.RecordTxnUpdate:
 			pos := &record.RecordPos{
 				FileId: w.FileId,
 				Offset: uint32(currentOffset),
@@ -145,7 +176,7 @@ func (w *Wal) RestoreIndex(index index.Index) error {
 				return err
 			}
 			fmt.Printf("更新索引成功: key=%s, pos=%+v\n", string(rec.Key), pos)
-		case record.RecordDelete:
+		case record.RecordDelete, record.RecordTxnDelete:
 			if err := index.Delete(rec.Key); err != nil {
 				fmt.Printf("删除索引失败: key=%s, err=%v\n", string(rec.Key), err)
 				return err

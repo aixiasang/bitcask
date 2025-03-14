@@ -14,6 +14,7 @@ import (
 	"github.com/aixiasang/bitcask/index"
 	"github.com/aixiasang/bitcask/record"
 	"github.com/aixiasang/bitcask/wal"
+	"github.com/gofrs/flock"
 )
 
 type Bitcask struct {
@@ -24,7 +25,7 @@ type Bitcask struct {
 	txnId     atomic.Uint32
 	walId     atomic.Uint32
 	memTable  index.Index
-	// fileLock  flock.Flock
+	fileLock  *flock.Flock
 }
 
 func NewBitcask(conf *config.Config) (*Bitcask, error) {
@@ -36,23 +37,51 @@ func NewBitcask(conf *config.Config) (*Bitcask, error) {
 		walId:     atomic.Uint32{},
 	}
 
+	if err := db.acquireLock(); err != nil {
+		return nil, fmt.Errorf("获取数据库锁失败: %v", err)
+	}
+
 	btreeIndex, err := index.NewBTreeIndex(32)
 	if err != nil {
+		db.releaseLock()
 		return nil, fmt.Errorf("创建索引失败: %v", err)
 	}
 	db.memTable = btreeIndex
 
 	if err := db.loadWal(); err != nil {
+		db.releaseLock()
 		return nil, fmt.Errorf("加载WAL失败: %v", err)
 	}
 	if db.activeWal == nil {
 		var err error
 		db.activeWal, err = wal.NewWal(db.walId.Load(), db.conf)
 		if err != nil {
+			db.releaseLock()
 			return nil, fmt.Errorf("创建新的WAL失败: %v", err)
 		}
 	}
 	return db, nil
+}
+
+func (db *Bitcask) acquireLock() error {
+	lockPath := filepath.Join(db.conf.DirPath, "bitcask.lock")
+	db.fileLock = flock.New(lockPath)
+
+	locked, err := db.fileLock.TryLock()
+	if err != nil {
+		return fmt.Errorf("获取文件锁失败: %v", err)
+	}
+	if !locked {
+		return fmt.Errorf("数据库已被其他进程锁定")
+	}
+	return nil
+}
+
+func (db *Bitcask) releaseLock() error {
+	if db.fileLock != nil {
+		return db.fileLock.Unlock()
+	}
+	return nil
 }
 
 func (db *Bitcask) Get(key []byte) ([]byte, error) {
@@ -88,7 +117,6 @@ func (db *Bitcask) Put(key []byte, value []byte) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// 检查键值大小
 	if len(key) > record.MaxKeySize {
 		return fmt.Errorf("key too large: %d > %d", len(key), record.MaxKeySize)
 	}
@@ -133,6 +161,11 @@ func (db *Bitcask) Close() error {
 		wal.Close()
 	}
 	db.activeWal.Close()
+
+	if err := db.releaseLock(); err != nil {
+		return fmt.Errorf("释放文件锁失败: %v", err)
+	}
+
 	return nil
 }
 
@@ -162,12 +195,10 @@ func (db *Bitcask) loadWal() error {
 	walPath := filepath.Join(db.conf.DirPath, db.conf.WalFolder)
 	fmt.Printf("WAL目录路径: %s\n", walPath)
 
-	// 确保WAL目录存在
 	if err := os.MkdirAll(walPath, 0755); err != nil {
 		return fmt.Errorf("创建WAL目录失败: %v", err)
 	}
 
-	// 查找所有WAL文件
 	pattern := filepath.Join(walPath, "*."+db.conf.WalFileExt)
 	fmt.Printf("查找WAL文件: %s\n", pattern)
 	files, err := filepath.Glob(pattern)
@@ -183,7 +214,6 @@ func (db *Bitcask) loadWal() error {
 	fmt.Printf("找到 %d 个WAL文件\n", len(files))
 	sort.Strings(files)
 
-	// 加载每个WAL文件
 	var maxWalId uint32 = 0
 	for i, fp := range files {
 		fileName := strings.TrimSuffix(filepath.Base(fp), "."+db.conf.WalFileExt)
@@ -206,7 +236,7 @@ func (db *Bitcask) loadWal() error {
 
 		fmt.Printf("恢复WAL索引 (ID=%d)\n", walId)
 		if err := wa.RestoreIndex(db.memTable); err != nil {
-			wa.Close() // 清理资源
+			wa.Close()
 			return fmt.Errorf("恢复索引失败 (ID=%d): %v", walId, err)
 		}
 
@@ -219,7 +249,6 @@ func (db *Bitcask) loadWal() error {
 		}
 	}
 
-	// 设置下一个WAL ID
 	db.walId.Store(maxWalId + 1)
 	fmt.Printf("设置下一个WAL ID: %d\n", maxWalId+1)
 	return nil
