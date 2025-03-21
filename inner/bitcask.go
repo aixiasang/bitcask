@@ -1,6 +1,7 @@
 package inner
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,19 +17,28 @@ import (
 	"github.com/aixiasang/bitcask/inner/config"
 	"github.com/aixiasang/bitcask/inner/index"
 	"github.com/aixiasang/bitcask/inner/record"
+	"github.com/aixiasang/bitcask/inner/utils"
 	"github.com/aixiasang/bitcask/inner/wal"
 )
 
+// Bitcask
 type Bitcask struct {
-	conf      *config.Config
-	activeWal *wal.Wal
-	oldWal    map[uint32]*wal.Wal
-	memTable  index.Index
-	fileId    uint32
-	mu        sync.RWMutex
-	fileIds   []uint32
-	txnId     atomic.Uint32
+	conf       *config.Config       // 配置
+	activeWal  *wal.Wal             // 活跃的WAL文件
+	oldWal     map[uint32]*wal.Wal  // 旧的WAL文件
+	memTable   index.Index          // 内存索引
+	fileId     uint32               // 当前文件ID
+	mu         sync.RWMutex         // 互斥锁
+	fileIds    []uint32             // 文件ID列表
+	txnId      atomic.Uint32        // 事务ID
+	comparator *utils.KeyComparator // 键比较器
 }
+
+// 添加扫描相关错误类型
+var (
+	errReachLimit     = errors.New("reach scan limit")
+	errExceedEndRange = errors.New("exceed end range")
+)
 
 func NewBitcask(conf *config.Config) (*Bitcask, error) {
 	// 创建 WAL 目录
@@ -44,11 +54,12 @@ func NewBitcask(conf *config.Config) (*Bitcask, error) {
 	}
 
 	bc := &Bitcask{
-		conf:     conf,
-		oldWal:   make(map[uint32]*wal.Wal),
-		memTable: index.NewBTreeIndex(conf.BTreeOrder),
-		fileId:   0,
-		txnId:    atomic.Uint32{},
+		conf:       conf,
+		oldWal:     make(map[uint32]*wal.Wal),
+		memTable:   index.NewBTreeIndex(conf.BTreeOrder),
+		fileId:     0,
+		txnId:      atomic.Uint32{},
+		comparator: utils.NewKeyComparator(),
 	}
 
 	// 尝试从 hint 文件加载索引作为基础状态
@@ -177,6 +188,96 @@ func (bc *Bitcask) Delete(key []byte) error {
 	return nil
 }
 
+// 支持Scan进行扫描查找
+func (bc *Bitcask) Scan(fn func(key []byte, value []byte) error) error {
+	return bc.memTable.ForeachUnSafe(func(key []byte, pos *record.Pos) error {
+		var targetWal *wal.Wal
+		if pos.FileId == bc.fileId {
+			targetWal = bc.activeWal
+		} else if w, ok := bc.oldWal[pos.FileId]; ok {
+			targetWal = w
+		} else {
+			return fmt.Errorf("file not found: fileId=%d", pos.FileId)
+		}
+		rec, err := targetWal.ReadPos(pos)
+		if err != nil {
+			return fmt.Errorf("读取WAL文件失败: %v", err)
+		}
+		return fn(rec.Key, rec.Value)
+	})
+}
+
+type ScanRangeResult struct {
+	Key   []byte
+	Value []byte
+}
+
+// 范围查找，限制返回结果数量
+func (bc *Bitcask) ScanRangeLimit(start, end []byte, limit int) ([]*ScanRangeResult, error) {
+	// 直接调用优化的实现
+	return bc.ScanRangeOptimized(start, end, limit)
+}
+
+// 范围查找
+func (bc *Bitcask) ScanRange(start, end []byte) ([]*ScanRangeResult, error) {
+	// 无限制的范围查找
+	return bc.ScanRangeOptimized(start, end, 0)
+}
+
+// 优化的范围查找方法，利用KeyComparator的InRange方法
+func (bc *Bitcask) ScanRangeOptimized(start, end []byte, limit int) ([]*ScanRangeResult, error) {
+	results := make([]*ScanRangeResult, 0, limit)
+	count := 0
+
+	// 先收集符合条件的键值对
+	keys := make([][]byte, 0)
+	values := make(map[string][]byte)
+
+	err := bc.Scan(func(key []byte, value []byte) error {
+		// 使用comparator.InRange直接判断key是否在[start, end]范围内
+		if bc.comparator.InRange(key, start, end) {
+			keys = append(keys, key)
+			values[string(key)] = value
+		} else if bc.comparator.Greater(key, end) {
+			// 超出范围，提前终止
+			return errExceedEndRange
+		}
+
+		return nil
+	})
+
+	// 只返回真正的错误，忽略我们用于控制流程的特殊错误
+	if err != nil && err != errReachLimit && err != errExceedEndRange {
+		return nil, err
+	}
+
+	// 对键进行排序
+	// 注意我们需要使用自定义的排序方式，与比较器保持一致
+	sort.Slice(keys, func(i, j int) bool {
+		// 先比较长度
+		if len(keys[i]) != len(keys[j]) {
+			return len(keys[i]) < len(keys[j])
+		}
+		// 长度相同，比较内容
+		return bytes.Compare(keys[i], keys[j]) < 0
+	})
+
+	// 按照排序后的顺序添加到结果中
+	for _, key := range keys {
+		if limit > 0 && count >= limit {
+			break
+		}
+		results = append(results, &ScanRangeResult{
+			Key:   key,
+			Value: values[string(key)],
+		})
+		count++
+	}
+
+	return results, nil
+}
+
+// loadWalFiles 加载WAL文件
 func (bc *Bitcask) loadWalFiles() error {
 	walPath := filepath.Join(bc.conf.DataDir, bc.conf.WalDir)
 	files, err := os.ReadDir(walPath)

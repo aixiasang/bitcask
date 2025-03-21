@@ -11,6 +11,7 @@
 - 🔒 并发安全：支持多线程并发访问
 - 🧹 数据合并：支持清理过期数据，优化存储空间
 - 💼 事务支持：提供批量操作和原子提交功能
+- 🔍 范围查询：高效的键范围扫描和结果限制功能
 
 ## 🏗️ 架构设计
 
@@ -21,6 +22,7 @@ Bitcask存储系统基于以下核心概念：
 3. **不可变文件**：旧的WAL文件是不可变的，确保数据一致性
 4. **Hint文件**：保存索引信息，加速启动过程
 5. **事务处理**：通过批处理和事务ID支持原子性操作
+6. **键比较器**：统一的键比较逻辑，确保范围查询的准确性
 
 
 ## 📝 使用示例
@@ -78,12 +80,34 @@ func main() {
     if err := batch.Commit(); err != nil {
         panic(err)
     }
+    
+    // 范围查询示例
+    start := []byte("key1")
+    end := []byte("key9")
+    
+    // 无限制范围查询
+    results, err := db.ScanRange(start, end)
+    if err != nil {
+        panic(err)
+    }
+    
+    for _, item := range results {
+        fmt.Printf("Key: %s, Value: %s\n", string(item.Key), string(item.Value))
+    }
+    
+    // 限制结果数量的范围查询
+    limitedResults, err := db.ScanRangeLimit(start, end, 10)
+    if err != nil {
+        panic(err)
+    }
+    
+    fmt.Printf("Found %d items in range\n", len(limitedResults))
 }
 ```
 
 ## 📦 包结构
 
-### 🧠 主包 `bitcask`
+### 🧠 主包 [`bitcask`](./inner/README.md)
 
 主包实现了Bitcask存储系统的核心功能，包括读取、写入、删除和合并等操作。
 
@@ -97,8 +121,10 @@ func main() {
 - `Merge()` - 合并数据文件，优化存储空间
 - `Batch` - 批处理事务结构体
 - `NewBatch()` - 创建新的批处理事务
+- `ScanRange()` - 范围查询，返回指定范围内的所有键值对
+- `ScanRangeLimit()` - 限制结果数量的范围查询
 
-### ⚙️ 配置包 `inner/config`
+### ⚙️ 配置包 [`inner/config`](./inner/config/README.md)
 
 提供系统配置相关功能，允许用户自定义Bitcask的行为。
 
@@ -112,8 +138,10 @@ func main() {
 - 最大文件大小
 - BTree索引阶数
 - 是否加载Hint文件
+- 批处理大小限制
+- 调试模式开关
 
-### 🔍 索引包 `inner/index`
+### 🔍 索引包 [`inner/index`](./inner/index/README.md)
 
 实现了高效的内存索引，支持快速查找键值对的磁盘位置。
 
@@ -129,16 +157,16 @@ func main() {
 - `Scan()` - 范围查询
 - `Foreach()` - 遍历所有索引
 
-### 📄 记录包 `inner/record`
+### 📄 记录包 [`inner/record`](./inner/record/README.md)
 
 定义了数据记录的格式和操作。
 
 主要类型：
-- `Record` - 数据记录结构体
+- `Record` - 数据记录结构体，包含键、值和记录类型
 - `Pos` - 记录在磁盘上的位置信息
-- `RecordType` - 记录类型（普通记录或删除标记）
+- `RecordType` - 记录类型（写入、删除、事务写入、事务删除或事务提交）
 
-### 📝 WAL包 `inner/wal`
+### 📝 WAL包 [`inner/wal`](./inner/wal/README.md)
 
 实现了预写日志(Write-Ahead Log)机制，确保数据持久化和崩溃恢复。
 
@@ -146,15 +174,18 @@ func main() {
 - `Wal` - WAL文件管理结构体
 - `NewWal()` - 创建新的WAL文件
 - `Write()` - 写入数据到WAL文件
+- `WriteTxn()` - 写入事务相关数据
+- `WriteTxnCommit()` - 写入事务提交标记
 - `ReadPos()` - 从特定位置读取数据
 - `ReadAll()` - 读取整个WAL文件
 - `Close()` - 关闭WAL文件
 
-### 🛠️ 工具包 `inner/utils`
+### 🛠️ 工具包 [`inner/utils`](./inner/utils/README.md)
 
 提供各种辅助函数，简化其他包的实现。
 
-主要函数：
+主要组件：
+- `KeyComparator` - 键比较器，确保比较逻辑一致性
 - 文件操作辅助函数
 - 数据转换函数
 - 测试辅助函数
@@ -185,6 +216,16 @@ func main() {
 - 崩溃恢复：系统重启后能够正确恢复已提交的事务
 - 批量操作：支持批量的Put和Delete操作，提高性能
 - 大小限制：配置中的BatchSize参数控制单个批处理的最大大小
+
+### 🔍 范围查询机制
+
+系统实现了高效的范围查询功能：
+
+- 统一比较器：使用KeyComparator确保所有地方的键比较逻辑一致
+- 优化算法：先收集满足条件的键，然后排序并返回结果
+- 结果限制：支持限制返回结果的数量，避免大范围查询消耗过多资源
+- 提前终止：当扫描超出范围时及时终止，提高查询效率
+- 排序保证：确保返回结果按照键的顺序排列
 
 ## 📜 许可证
 

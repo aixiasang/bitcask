@@ -96,6 +96,35 @@ func TestBitcask_Put(t *testing.T) {
 			t.Fatalf("重启后value不匹配: %s != %s", string(value), v)
 		}
 	}
+	t.Log("扫描开始...")
+	if err := db.Scan(func(key []byte, value []byte) error {
+		t.Logf("扫描: %s = %s", string(key), string(value))
+		return nil
+	}); err != nil {
+		t.Fatalf("扫描失败: %v", err)
+	}
+
+	t.Log("范围扫描开始...")
+	results, err := db.ScanRange([]byte("key-10"), []byte("key-20"))
+	if err != nil {
+		t.Fatalf("范围扫描失败: %v", err)
+	}
+	t.Logf("范围扫描结果: %v, 数量: %d", results, len(results))
+	for _, v := range results {
+		t.Logf("范围扫描结果: %s = %s", string(v.Key), string(v.Value))
+	}
+	t.Log("范围扫描结束...")
+
+	t.Log("范围扫描优化开始...")
+	results, err = db.ScanRangeOptimized([]byte("key-20"), []byte("key-40"), 10)
+	if err != nil {
+		t.Fatalf("范围扫描优化失败: %v", err)
+	}
+	t.Logf("范围扫描优化结果: %v, 数量: %d", results, len(results))
+	t.Log("范围扫描优化结束...")
+	for _, v := range results {
+		t.Logf("范围扫描优化结果: %s = %s", string(v.Key), string(v.Value))
+	}
 }
 
 // 原有的 Get 测试改进版

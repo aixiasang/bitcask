@@ -1,16 +1,19 @@
 package index
 
 import (
+	"bytes"
 	"sync"
 
 	"github.com/aixiasang/bitcask/inner/record"
+	"github.com/aixiasang/bitcask/inner/utils"
 	"github.com/google/btree"
 )
 
 // BTreeIndex 使用 Google BTree 实现的索引
 type BTreeIndex struct {
-	tree *btree.BTree // 使用 Google BTree 实现的 BTree
-	mu   sync.RWMutex // 添加读写锁保证并发安全
+	tree       *btree.BTree         // 使用 Google BTree 实现的 BTree
+	mu         sync.RWMutex         // 添加读写锁保证并发安全
+	comparator *utils.KeyComparator // 键比较器
 }
 
 // item 实现 btree.Item 接口
@@ -22,14 +25,20 @@ type item struct {
 // Less 实现 btree.Item 接口
 func (i item) Less(than btree.Item) bool {
 	other := than.(item)
-	return string(i.key) < string(other.key)
+	// 先比较长度
+	if len(i.key) != len(other.key) {
+		return len(i.key) < len(other.key)
+	}
+	// 长度相同，比较内容
+	return bytes.Compare(i.key, other.key) < 0
 }
 
 // NewBTreeIndex 创建一个新的 BTree 索引
 func NewBTreeIndex(order int) *BTreeIndex {
 	return &BTreeIndex{
-		tree: btree.New(order), // 使用2阶B树，Google BTree 推荐使用2阶
-		mu:   sync.RWMutex{},
+		tree:       btree.New(order), // 使用指定阶数的B树
+		mu:         sync.RWMutex{},
+		comparator: utils.NewKeyComparator(),
 	}
 }
 
@@ -73,12 +82,17 @@ func (b *BTreeIndex) Scan(startKey, endKey []byte) ([]*Data, error) {
 	// 遍历 B 树
 	b.tree.Ascend(func(i btree.Item) bool {
 		item := i.(item)
-		if string(item.key) >= string(startKey) && string(item.key) <= string(endKey) {
+		// 使用比较器判断是否在范围内
+		if b.comparator.InRange(item.key, startKey, endKey) {
 			data := &Data{
 				Key: string(item.key),
 				Pos: *item.pos,
 			}
 			results = append(results, data)
+		}
+		// 如果超出上界，停止遍历
+		if b.comparator.Greater(item.key, endKey) {
+			return false
 		}
 		return true
 	})
