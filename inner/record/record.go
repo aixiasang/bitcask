@@ -7,13 +7,18 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+
+	"github.com/aixiasang/bitcask/inner/utils"
 )
 
 type RecordType uint8
 
 const (
-	RecordTypePut RecordType = iota
-	RecordTypeDelete
+	RecordTypePut       RecordType = iota // 写入
+	RecordTypeDelete                      // 删除
+	RecordTypeTxnPut                      // 事务写入
+	RecordTypeTxnDelete                   // 事务删除
+	RecordTypeTxnCommit                   // 事务提交
 )
 
 type Record struct {
@@ -27,6 +32,15 @@ func NewRecord(key, value []byte) *Record {
 		return newRecord(key, nil, RecordTypeDelete)
 	}
 	return newRecord(key, value, RecordTypePut)
+}
+func NewTxnRecord(key, value []byte) *Record {
+	if value == nil {
+		return newRecord(key, nil, RecordTypeTxnDelete)
+	}
+	return newRecord(key, value, RecordTypeTxnPut)
+}
+func NewTxnCommit(key []byte) *Record {
+	return newRecord(key, nil, RecordTypeTxnCommit)
 }
 
 func newRecord(key, value []byte, recordType RecordType) *Record {
@@ -103,7 +117,9 @@ func DecodeRecord(data []byte) (*Record, error) {
 	if storedCrc != actualCrc {
 		return nil, errors.New("crc mismatch")
 	}
-
+	if recordType == RecordTypeTxnPut || recordType == RecordTypeTxnDelete {
+		_, key = utils.DecodeTxnId(key)
+	}
 	return &Record{
 		RecordType: recordType,
 		Key:        key,

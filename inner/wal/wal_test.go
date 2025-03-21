@@ -3,6 +3,7 @@ package wal
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aixiasang/bitcask/inner/config"
@@ -117,7 +118,7 @@ func TestWal_Delete(t *testing.T) {
 
 	// 使用 memTable 测试恢复
 	memTable := index.NewBTreeIndex(2)
-	err = wal.ReadAll(memTable)
+	err = wal.ReadAll(memTable, &atomic.Uint32{})
 	assert.NoError(t, err)
 
 	// 验证记录已删除
@@ -155,7 +156,7 @@ func TestWal_ReadAll(t *testing.T) {
 
 	// 使用 memTable 测试恢复
 	memTable := index.NewBTreeIndex(2)
-	err = wal.ReadAll(memTable)
+	err = wal.ReadAll(memTable, &atomic.Uint32{})
 	assert.NoError(t, err)
 
 	// 验证所有数据都已恢复

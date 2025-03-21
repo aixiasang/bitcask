@@ -16,6 +16,8 @@ type Config struct {
 	WalDir      string    // WAL 目录
 	HintDir     string    // hint 文件目录
 	LoadHint    bool      // 是否加载 hint 文件
+	BatchSize   int       // 批处理大小
+	Debug       bool      // 是否开启调试模式
 }
 
 func NewConfig() *Config {
@@ -28,5 +30,7 @@ func NewConfig() *Config {
 		WalDir:      "wal",
 		HintDir:     "hint",
 		LoadHint:    true,
+		Debug:       true,
+		BatchSize:   200,
 	}
 }

@@ -1,4 +1,4 @@
-package bitcask
+package inner
 
 import (
 	"encoding/binary"
@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/aixiasang/bitcask/inner/config"
 	"github.com/aixiasang/bitcask/inner/index"
@@ -26,6 +27,7 @@ type Bitcask struct {
 	fileId    uint32
 	mu        sync.RWMutex
 	fileIds   []uint32
+	txnId     atomic.Uint32
 }
 
 func NewBitcask(conf *config.Config) (*Bitcask, error) {
@@ -46,13 +48,16 @@ func NewBitcask(conf *config.Config) (*Bitcask, error) {
 		oldWal:   make(map[uint32]*wal.Wal),
 		memTable: index.NewBTreeIndex(conf.BTreeOrder),
 		fileId:   0,
+		txnId:    atomic.Uint32{},
 	}
 
 	// 尝试从 hint 文件加载索引作为基础状态
 	if err := bc.LoadHint(); err != nil {
 		return nil, fmt.Errorf("从hint文件加载索引失败: %v", err)
 	}
-
+	if bc.conf.Debug {
+		fmt.Printf("hint文件加载成功，最新的事务ID: %d\n", bc.txnId.Load())
+	}
 	// 然后处理所有WAL文件以获取最新更新
 	// 这确保即使存在hint文件，也能应用最新的变更
 	if err := bc.loadWalFiles(); err != nil {
@@ -65,6 +70,9 @@ func NewBitcask(conf *config.Config) (*Bitcask, error) {
 			return nil, err
 		}
 		bc.activeWal = activeWal
+	}
+	if bc.txnId.Load() != 0 {
+		bc.txnId.Add(1)
 	}
 	return bc, nil
 }
@@ -125,7 +133,7 @@ func (bc *Bitcask) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	if pos == nil {
-		return nil, errors.New("key not found")
+		return nil, ErrKeyNotFound
 	}
 
 	var targetWal *wal.Wal
@@ -211,10 +219,10 @@ func (bc *Bitcask) loadWalFiles() error {
 			return fmt.Errorf("无法打开WAL文件 %d: %v", fileId, err)
 		}
 
-		fmt.Printf("正在处理WAL文件 %d (索引 %d/%d)\n", fileId, i+1, len(bc.fileIds))
+		fmt.Printf("正在处理WAL文件 %d (索引 %d/%d), 事务ID: %d\n", fileId, i+1, len(bc.fileIds), bc.txnId.Load())
 
 		if bc.conf.LoadHint {
-			if err := curWal.ReadAll(bc.memTable); err != nil {
+			if err := curWal.ReadAll(bc.memTable, &bc.txnId); err != nil {
 				return fmt.Errorf("读取WAL文件 %d 失败: %v", fileId, err)
 			}
 			curWal.UpdateOffset()
@@ -275,7 +283,11 @@ func (bc *Bitcask) Hint() error {
 	}
 	defer hintFile.Close()
 
-	// 遍历内存索引，将键和位置信息写入hint文件
+	// 1.先写入txnId
+	if err := binary.Write(hintFile, binary.BigEndian, bc.txnId.Load()); err != nil {
+		return fmt.Errorf("写入事务ID失败: %v", err)
+	}
+	// 2.遍历内存索引，将键和位置信息写入hint文件
 	var entries uint32 = 0
 	err = bc.memTable.Foreach(func(key []byte, pos *record.Pos) error {
 		// 写入键长度
@@ -378,6 +390,13 @@ func (bc *Bitcask) LoadHint() error {
 		return fmt.Errorf("打开hint文件失败: %v", err)
 	}
 	defer hintFile.Close()
+
+	// 读取事务ID
+	var txnId uint32
+	if err := binary.Read(hintFile, binary.BigEndian, &txnId); err != nil {
+		return fmt.Errorf("读取事务ID失败: %v", err)
+	}
+	bc.txnId.Store(txnId)
 
 	var entries uint32 = 0
 	for {

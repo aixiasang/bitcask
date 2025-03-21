@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/aixiasang/bitcask/inner/config"
 	"github.com/aixiasang/bitcask/inner/index"
 	"github.com/aixiasang/bitcask/inner/record"
+	"github.com/aixiasang/bitcask/inner/utils"
 )
 
 type Wal struct {
@@ -33,10 +35,22 @@ func NewWal(conf *config.Config, fileId uint32) (*Wal, error) {
 }
 
 func (w *Wal) Write(key, value []byte) (*record.Pos, error) {
+	rec := record.NewRecord(key, value)
+	return w.write(rec)
+}
+
+func (w *Wal) WriteTxn(key, value []byte) (*record.Pos, error) {
+	rec := record.NewTxnRecord(key, value)
+	return w.write(rec)
+}
+func (w *Wal) WriteTxnCommit(key []byte) (*record.Pos, error) {
+	rec := record.NewTxnCommit(key)
+	return w.write(rec)
+}
+func (w *Wal) write(rec *record.Record) (*record.Pos, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	preOffset := w.offset
-	rec := record.NewRecord(key, value)
 	encoded, err := rec.Encode()
 	if err != nil {
 		return nil, err
@@ -57,7 +71,6 @@ func (w *Wal) Write(key, value []byte) (*record.Pos, error) {
 		Length: uint32(length),
 	}, nil
 }
-
 func (w *Wal) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -117,13 +130,20 @@ func (w *Wal) ReadPos(pos *record.Pos) (*record.Record, error) {
 	return rec, nil
 }
 
-func (w *Wal) ReadAll(memTable index.Index) error {
+type txnData struct {
+	rec *record.Record
+	pos *record.Pos
+}
+
+func (w *Wal) ReadAll(memTable index.Index, dbTxnId *atomic.Uint32) error {
 	// 将文件指针移到开始位置
 	if _, err := w.fp.Seek(0, 0); err != nil {
 		return err
 	}
 
-	fmt.Printf("开始从文件ID=%d读取全部记录\n", w.fileId)
+	if w.conf.Debug {
+		fmt.Printf("开始从文件ID=%d读取全部记录\n", w.fileId)
+	}
 
 	// 获取文件大小
 	fileInfo, err := w.fp.Stat()
@@ -142,6 +162,7 @@ func (w *Wal) ReadAll(memTable index.Index) error {
 		fmt.Printf("警告：仅读取了文件部分内容: %d 字节，总大小 %d 字节\n", n, fileSize)
 	}
 
+	batchData := make(map[uint32][]*txnData)
 	// 逐条解析记录并保存最新的记录位置
 	var offset uint32 = 0
 	for offset < uint32(n) {
@@ -194,31 +215,81 @@ func (w *Wal) ReadAll(memTable index.Index) error {
 			// 继续处理，但记录警告
 		}
 
-		fmt.Printf("解析记录: type=%d, key=%s, keyLen=%d, valueLen=%d, offset=%d, len=%d\n",
-			recordType, string(key), keyLength, valueLength, offset, recordLength)
-
+		if w.conf.Debug {
+			fmt.Printf("解析记录: type=%d, key=%s, keyLen=%d, valueLen=%d, offset=%d, len=%d\n",
+				recordType, string(key), keyLength, valueLength, offset, recordLength)
+		}
+		pos := &record.Pos{
+			FileId: w.fileId,
+			Offset: recordStartOffset, // 使用记录的实际起始位置
+			Length: recordLength,
+		}
 		// 基于记录类型处理
 		if recordType == record.RecordTypeDelete {
-			fmt.Printf("处理删除记录: key=%s\n", string(key))
-			_ = memTable.Delete(key)
-		} else {
-			fmt.Printf("处理普通记录: key=%s, value=%s\n", string(key), string(value))
-			// 关键修复: 使用当前记录在文件中的实际位置，而不是旧位置
-			pos := &record.Pos{
-				FileId: w.fileId,
-				Offset: recordStartOffset, // 使用记录的实际起始位置
-				Length: recordLength,
+			if w.conf.Debug {
+				fmt.Printf("处理删除记录: key=%s\n", string(key))
+			}
+			if err := memTable.Delete(key); err != nil {
+				return fmt.Errorf("删除索引失败: %v", err)
+			}
+		} else if recordType == record.RecordTypePut {
+			if w.conf.Debug {
+				fmt.Printf("处理普通记录: key=%s, value=%s\n", string(key), string(value))
 			}
 			if err := memTable.Put(key, pos); err != nil {
 				return fmt.Errorf("更新索引失败: %v", err)
 			}
+		} else if recordType == record.RecordTypeTxnPut {
+			if w.conf.Debug {
+				fmt.Printf("处理事务写入记录: key=%s, value=%s\n", string(key), string(value))
+			}
+			txnId, decKey := utils.DecodeTxnId(key)
+			batchData[txnId] = append(batchData[txnId], &txnData{
+				rec: &record.Record{
+					RecordType: recordType,
+					Key:        decKey,
+					Value:      value,
+				},
+				pos: pos,
+			})
+		} else if recordType == record.RecordTypeTxnDelete {
+			if w.conf.Debug {
+				fmt.Printf("处理事务删除记录: key=%s\n", string(key))
+			}
+			txnId, decKey := utils.DecodeTxnId(key)
+			batchData[txnId] = append(batchData[txnId], &txnData{
+				rec: &record.Record{
+					RecordType: recordType,
+					Key:        decKey,
+				},
+				pos: pos,
+			})
+		} else if recordType == record.RecordTypeTxnCommit {
+			if w.conf.Debug {
+				fmt.Printf("处理事务提交记录: key=%s\n", string(key))
+			}
+			txnId, _ := utils.DecodeTxnId(key)
+			for _, rec := range batchData[txnId] {
+				if rec.rec.RecordType == record.RecordTypeTxnPut {
+					if err := memTable.Put(rec.rec.Key, rec.pos); err != nil {
+						return fmt.Errorf("更新索引失败: %v", err)
+					}
+				} else if rec.rec.RecordType == record.RecordTypeTxnDelete {
+					if err := memTable.Delete(rec.rec.Key); err != nil {
+						return fmt.Errorf("删除索引失败: %v", err)
+					}
+				}
+			}
+			delete(batchData, txnId)
+			dbTxnId.Store(txnId)
 		}
-
 		// 更新偏移量
 		offset += recordLength
 	}
 
-	fmt.Printf("文件ID=%d读取完成，处理了 %d 字节\n", w.fileId, offset)
+	if w.conf.Debug {
+		fmt.Printf("文件ID=%d读取完成，处理了 %d 字节\n", w.fileId, offset)
+	}
 
 	// 更新WAL实例的offset以反映文件的实际大小
 	w.offset = offset
