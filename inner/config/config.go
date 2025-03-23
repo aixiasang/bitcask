@@ -1,12 +1,14 @@
 package config
 
+// 索引类型
 type IndexType uint8
 
 const (
-	IndexTypeBTree IndexType = iota
-	IndexTypeSkipList
+	IndexTypeBTree    IndexType = iota // B树索引
+	IndexTypeSkipList                  // 跳表索引
 )
 
+// 配置
 type Config struct {
 	DataDir     string    // 数据目录
 	IndexType   IndexType // 索引类型

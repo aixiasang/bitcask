@@ -19,6 +19,13 @@ import (
 	"github.com/aixiasang/bitcask/inner/record"
 	"github.com/aixiasang/bitcask/inner/utils"
 	"github.com/aixiasang/bitcask/inner/wal"
+	"github.com/gofrs/flock"
+)
+
+var (
+	ErrKeyNotFound    = errors.New("key not found")
+	ErrReachLimit     = errors.New("reach scan limit")
+	ErrExceedEndRange = errors.New("exceed end range")
 )
 
 // Bitcask
@@ -32,13 +39,8 @@ type Bitcask struct {
 	fileIds    []uint32             // 文件ID列表
 	txnId      atomic.Uint32        // 事务ID
 	comparator *utils.KeyComparator // 键比较器
+	flock      *flock.Flock         // 文件锁
 }
-
-// 添加扫描相关错误类型
-var (
-	errReachLimit     = errors.New("reach scan limit")
-	errExceedEndRange = errors.New("exceed end range")
-)
 
 func NewBitcask(conf *config.Config) (*Bitcask, error) {
 	// 创建 WAL 目录
@@ -60,6 +62,7 @@ func NewBitcask(conf *config.Config) (*Bitcask, error) {
 		fileId:     0,
 		txnId:      atomic.Uint32{},
 		comparator: utils.NewKeyComparator(),
+		flock:      flock.New(filepath.Join(conf.DataDir, "bitcask.lock")),
 	}
 
 	// 尝试从 hint 文件加载索引作为基础状态
@@ -240,14 +243,14 @@ func (bc *Bitcask) ScanRangeOptimized(start, end []byte, limit int) ([]*ScanRang
 			values[string(key)] = value
 		} else if bc.comparator.Greater(key, end) {
 			// 超出范围，提前终止
-			return errExceedEndRange
+			return ErrExceedEndRange
 		}
 
 		return nil
 	})
 
 	// 只返回真正的错误，忽略我们用于控制流程的特殊错误
-	if err != nil && err != errReachLimit && err != errExceedEndRange {
+	if err != nil && err != ErrReachLimit && err != ErrExceedEndRange {
 		return nil, err
 	}
 
@@ -365,6 +368,9 @@ func (bc *Bitcask) Close() error {
 		if err := w.Close(); err != nil {
 			return err
 		}
+	}
+	if err := bc.flock.Unlock(); err != nil {
+		return err
 	}
 
 	return nil

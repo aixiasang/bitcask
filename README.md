@@ -12,6 +12,7 @@
 - 🧹 数据合并：支持清理过期数据，优化存储空间
 - 💼 事务支持：提供批量操作和原子提交功能
 - 🔍 范围查询：高效的键范围扫描和结果限制功能
+- 📊 SQL支持：内置SQL解析和执行引擎，支持基本SQL语法
 
 ## 🏗️ 架构设计
 
@@ -23,9 +24,12 @@ Bitcask存储系统基于以下核心概念：
 4. **Hint文件**：保存索引信息，加速启动过程
 5. **事务处理**：通过批处理和事务ID支持原子性操作
 6. **键比较器**：统一的键比较逻辑，确保范围查询的准确性
+7. **SQL引擎**：将SQL查询转换为底层存储操作，实现关系数据模型
 
 
 ## 📝 使用示例
+
+### 作为键值存储使用
 
 ```go
 package main
@@ -102,6 +106,66 @@ func main() {
     }
     
     fmt.Printf("Found %d items in range\n", len(limitedResults))
+}
+```
+
+### 使用SQL接口
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    
+    "github.com/aixiasang/bitcask/sql"
+)
+
+func main() {
+    // 创建SQL引擎
+    engine := sql.NewEngine()
+    
+    // 打开数据库
+    err := engine.Open("./mydb")
+    if err != nil {
+        log.Fatal("Failed to open database:", err)
+    }
+    defer engine.Close()
+    
+    // 创建表
+    result, err := engine.Execute(`
+        CREATE TABLE users (
+            id INT PRIMARY KEY,
+            name VARCHAR NOT NULL,
+            age INT,
+            is_active BOOLEAN DEFAULT true
+        )
+    `)
+    if err != nil {
+        log.Fatal("Failed to create table:", err)
+    }
+    fmt.Println(result)
+    
+    // 插入数据
+    result, err = engine.Execute(`
+        INSERT INTO users (id, name, age) VALUES 
+        (1, 'Alice', 30),
+        (2, 'Bob', 25),
+        (3, 'Charlie', 35)
+    `)
+    if err != nil {
+        log.Fatal("Failed to insert data:", err)
+    }
+    fmt.Println(result)
+    
+    // 查询数据
+    result, err = engine.Execute(`
+        SELECT id, name, age FROM users WHERE age > 25 ORDER BY age ASC
+    `)
+    if err != nil {
+        log.Fatal("Failed to query data:", err)
+    }
+    fmt.Println(result)
 }
 ```
 
@@ -190,6 +254,27 @@ func main() {
 - 数据转换函数
 - 测试辅助函数
 
+### 🔤 SQL包 [`sql`](./sql/README.md)
+
+提供SQL解析和执行功能，构建在Bitcask存储引擎之上。
+
+主要组件：
+- `Engine` - SQL引擎，处理SQL语句的解析和执行
+- `token` - 定义SQL词法单元
+- `lexer` - SQL词法分析器
+- `ast` - SQL抽象语法树
+- `parser` - SQL解析器
+- `types` - SQL数据类型系统
+- `plan` - 查询计划生成和优化
+- `executor` - 查询执行器
+
+支持的SQL功能：
+- 表的创建和删除
+- 数据插入、查询、更新和删除
+- 条件过滤和排序
+- 基本事务支持
+- 查询计划解释
+
 ## 🔑 关键实现细节
 
 ### 🔄 数据恢复机制
@@ -226,6 +311,18 @@ func main() {
 - 结果限制：支持限制返回结果的数量，避免大范围查询消耗过多资源
 - 提前终止：当扫描超出范围时及时终止，提高查询效率
 - 排序保证：确保返回结果按照键的顺序排列
+
+### 📊 SQL引擎
+
+SQL模块建立在Bitcask键值存储之上，提供结构化数据访问：
+
+- 关系模型：支持表、列和关系的定义与操作
+- 词法分析与解析：将SQL文本转换为抽象语法树
+- 查询优化：生成高效的查询执行计划
+- 数据类型系统：支持整数、字符串、布尔值等基本类型
+- 索引管理：通过底层键值存储实现高效索引
+- 存储映射：将表和行数据映射到键值对
+- 事务集成：与Bitcask事务机制集成，确保数据一致性
 
 ## 📜 许可证
 
