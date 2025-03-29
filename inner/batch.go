@@ -80,6 +80,9 @@ func (b *Batch) Commit() error {
 		}
 		return nil
 	}
+	if err := b.db.putTxnBegin([]byte("txn_begin"), b.txnId); err != nil {
+		return err
+	}
 	for _, key := range b.keys {
 		if value, ok := b.mp[string(key)]; ok {
 			if value == nil {
@@ -119,6 +122,20 @@ func (bc *Bitcask) putTxn(key, value []byte, txnId uint32) error {
 	}
 	return nil
 }
+func (bc *Bitcask) putTxnBegin(key []byte, txnId uint32) error {
+	if key == nil {
+		return errors.New("key cannot be nil")
+	}
+	if err := bc.tryRotate(); err != nil {
+		return err
+	}
+	encKey := utils.EncodeTxnId(txnId, key)
+	if _, err := bc.activeWal.WriteTxnBegin(encKey); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (bc *Bitcask) putTxnCommit(key []byte, txnId uint32) error {
 	if key == nil {
 		return errors.New("key cannot be nil")

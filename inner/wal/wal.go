@@ -47,6 +47,11 @@ func (w *Wal) WriteTxnCommit(key []byte) (*record.Pos, error) {
 	rec := record.NewTxnCommit(key)
 	return w.write(rec)
 }
+func (w *Wal) WriteTxnBegin(key []byte) (*record.Pos, error) {
+	rec := record.NewTxnBegin(key)
+	return w.write(rec)
+}
+
 func (w *Wal) write(rec *record.Record) (*record.Pos, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -163,6 +168,87 @@ func (w *Wal) ReadAll(memTable index.Index, dbTxnId *atomic.Uint32) error {
 	}
 
 	batchData := make(map[uint32][]*txnData)
+	txnFlag := false
+	curTxnId := uint32(0)
+	updatedFunc := func(rec *record.Record, pos *record.Pos) error {
+		if rec.RecordType == record.RecordTypeBegin {
+			txnFlag = true
+			curTxnId, _ = utils.DecodeTxnId(rec.Key)
+			return nil
+		}
+		// 事务开始标志
+		if txnFlag {
+			if rec.RecordType == record.RecordTypeTxnPut {
+				if w.conf.Debug {
+					fmt.Printf("处理事务写入记录: key=%s, value=%s\n", string(rec.Key), string(rec.Value))
+				}
+				txnId, decKey := utils.DecodeTxnId(rec.Key)
+				if txnId != curTxnId {
+					return fmt.Errorf("事务ID不匹配: %d != %d", txnId, curTxnId)
+				}
+				rec.Key = decKey
+				batchData[txnId] = append(batchData[txnId], &txnData{
+					rec: rec,
+					pos: pos,
+				})
+			} else if rec.RecordType == record.RecordTypeTxnDelete {
+				if w.conf.Debug {
+					fmt.Printf("处理事务删除记录: key=%s\n", string(rec.Key))
+				}
+				txnId, decKey := utils.DecodeTxnId(rec.Key)
+				if txnId != curTxnId {
+					return fmt.Errorf("事务ID不匹配: %d != %d", txnId, curTxnId)
+				}
+				rec.Key = decKey
+				batchData[txnId] = append(batchData[txnId], &txnData{
+					rec: rec,
+					pos: pos,
+				})
+			} else if rec.RecordType == record.RecordTypeTxnCommit {
+				if w.conf.Debug {
+					fmt.Printf("处理事务提交记录: key=%s\n", string(rec.Key))
+				}
+				txnId, _ := utils.DecodeTxnId(rec.Key)
+				if txnId != curTxnId {
+					return fmt.Errorf("事务ID不匹配: %d != %d", txnId, curTxnId)
+				}
+				for _, rec := range batchData[txnId] {
+					if rec.rec.RecordType == record.RecordTypeTxnPut {
+						if err := memTable.Put(rec.rec.Key, rec.pos); err != nil {
+							return fmt.Errorf("更新索引失败: %v", err)
+						}
+					} else if rec.rec.RecordType == record.RecordTypeTxnDelete {
+						if err := memTable.Delete(rec.rec.Key); err != nil {
+							return fmt.Errorf("删除索引失败: %v", err)
+						}
+					}
+				}
+				delete(batchData, txnId) // 删除事务数据
+				dbTxnId.Store(curTxnId)  // 更新事务ID
+				curTxnId = 0             // 重置事务ID
+				txnFlag = false          // 重置事务标志
+				return nil
+			}
+		} else {
+			// 基于记录类型处理
+			if rec.RecordType == record.RecordTypeDelete {
+				if w.conf.Debug {
+					fmt.Printf("处理删除记录: key=%s\n", string(rec.Key))
+				}
+				if err := memTable.Delete(rec.Key); err != nil {
+					return fmt.Errorf("删除索引失败: %v", err)
+				}
+			} else if rec.RecordType == record.RecordTypePut {
+				if w.conf.Debug {
+					fmt.Printf("处理普通记录: key=%s, value=%s\n", string(rec.Key), string(rec.Value))
+				}
+				if err := memTable.Put(rec.Key, pos); err != nil {
+					return fmt.Errorf("更新索引失败: %v", err)
+				}
+			}
+		}
+		return nil
+	}
 	// 逐条解析记录并保存最新的记录位置
 	var offset uint32 = 0
 	for offset < uint32(n) {
@@ -219,69 +305,19 @@ func (w *Wal) ReadAll(memTable index.Index, dbTxnId *atomic.Uint32) error {
 			fmt.Printf("解析记录: type=%d, key=%s, keyLen=%d, valueLen=%d, offset=%d, len=%d\n",
 				recordType, string(key), keyLength, valueLength, offset, recordLength)
 		}
+
+		rec := &record.Record{
+			RecordType: recordType,
+			Key:        key,
+			Value:      value,
+		}
 		pos := &record.Pos{
 			FileId: w.fileId,
 			Offset: recordStartOffset, // 使用记录的实际起始位置
 			Length: recordLength,
 		}
-		// 基于记录类型处理
-		if recordType == record.RecordTypeDelete {
-			if w.conf.Debug {
-				fmt.Printf("处理删除记录: key=%s\n", string(key))
-			}
-			if err := memTable.Delete(key); err != nil {
-				return fmt.Errorf("删除索引失败: %v", err)
-			}
-		} else if recordType == record.RecordTypePut {
-			if w.conf.Debug {
-				fmt.Printf("处理普通记录: key=%s, value=%s\n", string(key), string(value))
-			}
-			if err := memTable.Put(key, pos); err != nil {
-				return fmt.Errorf("更新索引失败: %v", err)
-			}
-		} else if recordType == record.RecordTypeTxnPut {
-			if w.conf.Debug {
-				fmt.Printf("处理事务写入记录: key=%s, value=%s\n", string(key), string(value))
-			}
-			txnId, decKey := utils.DecodeTxnId(key)
-			batchData[txnId] = append(batchData[txnId], &txnData{
-				rec: &record.Record{
-					RecordType: recordType,
-					Key:        decKey,
-					Value:      value,
-				},
-				pos: pos,
-			})
-		} else if recordType == record.RecordTypeTxnDelete {
-			if w.conf.Debug {
-				fmt.Printf("处理事务删除记录: key=%s\n", string(key))
-			}
-			txnId, decKey := utils.DecodeTxnId(key)
-			batchData[txnId] = append(batchData[txnId], &txnData{
-				rec: &record.Record{
-					RecordType: recordType,
-					Key:        decKey,
-				},
-				pos: pos,
-			})
-		} else if recordType == record.RecordTypeTxnCommit {
-			if w.conf.Debug {
-				fmt.Printf("处理事务提交记录: key=%s\n", string(key))
-			}
-			txnId, _ := utils.DecodeTxnId(key)
-			for _, rec := range batchData[txnId] {
-				if rec.rec.RecordType == record.RecordTypeTxnPut {
-					if err := memTable.Put(rec.rec.Key, rec.pos); err != nil {
-						return fmt.Errorf("更新索引失败: %v", err)
-					}
-				} else if rec.rec.RecordType == record.RecordTypeTxnDelete {
-					if err := memTable.Delete(rec.rec.Key); err != nil {
-						return fmt.Errorf("删除索引失败: %v", err)
-					}
-				}
-			}
-			delete(batchData, txnId)
-			dbTxnId.Store(txnId)
+		if err := updatedFunc(rec, pos); err != nil {
+			return err
 		}
 		// 更新偏移量
 		offset += recordLength
@@ -290,7 +326,6 @@ func (w *Wal) ReadAll(memTable index.Index, dbTxnId *atomic.Uint32) error {
 	if w.conf.Debug {
 		fmt.Printf("文件ID=%d读取完成，处理了 %d 字节\n", w.fileId, offset)
 	}
-
 	// 更新WAL实例的offset以反映文件的实际大小
 	w.offset = offset
 

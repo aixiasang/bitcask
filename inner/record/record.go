@@ -16,6 +16,7 @@ type RecordType uint8
 const (
 	RecordTypePut       RecordType = iota // 写入
 	RecordTypeDelete                      // 删除
+	RecordTypeBegin                       // 事务开始
 	RecordTypeTxnPut                      // 事务写入
 	RecordTypeTxnDelete                   // 事务删除
 	RecordTypeTxnCommit                   // 事务提交
@@ -42,7 +43,9 @@ func NewTxnRecord(key, value []byte) *Record {
 func NewTxnCommit(key []byte) *Record {
 	return newRecord(key, nil, RecordTypeTxnCommit)
 }
-
+func NewTxnBegin(key []byte) *Record {
+	return newRecord(key, nil, RecordTypeBegin)
+}
 func newRecord(key, value []byte, recordType RecordType) *Record {
 	return &Record{
 		Key:        key,

@@ -18,18 +18,18 @@
 
 Bitcask存储系统基于以下核心概念：
 
-1. **写入追加(Append-Only)**：所有写操作都以追加方式写入活跃的WAL文件
-2. **内存索引**：键到磁盘位置的映射保存在内存中，确保快速查询
-3. **不可变文件**：旧的WAL文件是不可变的，确保数据一致性
-4. **Hint文件**：保存索引信息，加速启动过程
-5. **事务处理**：通过批处理和事务ID支持原子性操作
-6. **键比较器**：统一的键比较逻辑，确保范围查询的准确性
-7. **SQL引擎**：将SQL查询转换为底层存储操作，实现关系数据模型
+1. **📝 写入追加(Append-Only)**：所有写操作都以追加方式写入活跃的WAL文件
+2. **🧠 内存索引**：键到磁盘位置的映射保存在内存中，确保快速查询
+3. **🔒 不可变文件**：旧的WAL文件是不可变的，确保数据一致性
+4. **📔 Hint文件**：保存索引信息，加速启动过程
+5. **💼 事务处理**：通过批处理和事务ID支持原子性操作
+6. **🔠 键比较器**：统一的键比较逻辑，确保范围查询的准确性
+7. **🔍 SQL引擎**：将SQL查询转换为底层存储操作，实现关系数据模型
 
 
 ## 📝 使用示例
 
-### 作为键值存储使用
+### 🔑 作为键值存储使用
 
 ```go
 package main
@@ -109,7 +109,7 @@ func main() {
 }
 ```
 
-### 使用SQL接口
+### 📊 使用SQL接口
 
 ```go
 package main
@@ -327,3 +327,217 @@ SQL模块建立在Bitcask键值存储之上，提供结构化数据访问：
 ## 📜 许可证
 
 [MIT License](LICENSE) 
+
+# 🗄️ Bitcask 存储引擎
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/yourusername/bitcask.svg)](https://pkg.go.dev/github.com/yourusername/bitcask)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yourusername/bitcask)](https://goreportcard.com/report/github.com/yourusername/bitcask)
+[![License](https://img.shields.io/github/license/yourusername/bitcask.svg)](https://github.com/yourusername/bitcask/blob/main/LICENSE)
+
+Bitcask 是一个高性能、持久化的键值存储引擎，基于 Bitcask 论文实现，并进行了一系列优化和扩展。它提供简单易用的 API、可靠的数据持久化、快速的读写性能以及丰富的接口支持。
+
+## ✨ 主要特性
+
+- 🚀 **高性能**：基于顺序写入和内存索引的设计，提供极高的写入和读取性能
+- 💾 **数据持久化**：所有写入操作即时持久化到磁盘，防止数据丢失
+- 🔄 **自动恢复**：启动时自动从持久化数据恢复内存索引
+- 🔌 **多种接口**：支持本地 Go API、Redis 协议、HTTP REST API
+- 🌐 **分布式支持**：通过 Raft 共识算法实现多节点分布式存储
+- 🏗️ **数据结构丰富**：支持字符串、列表、哈希表、集合等多种数据结构
+- ⏱️ **键过期**：支持设置键的过期时间
+- 🔄 **自动合并**：自动进行数据文件合并，节省磁盘空间
+- ⚙️ **高度可配置**：丰富的配置选项，适应不同场景需求
+- 🔧 **命令行工具**：便捷的命令行管理工具
+
+## 📥 安装
+
+### 🧪 从源码安装
+
+```bash
+git clone https://github.com/yourusername/bitcask.git
+cd bitcask
+go build -o bitcask ./cmd/bitcask
+```
+
+### 📦 使用 Go Get
+
+```bash
+go get -u github.com/yourusername/bitcask
+```
+
+## 🚀 快速开始
+
+### 📚 作为库使用
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    
+    "github.com/yourusername/bitcask/inner"
+)
+
+func main() {
+    // 创建一个新的 Bitcask 实例
+    config := inner.NewConfig()
+    config.DataDir = "./data"
+    
+    db, err := inner.Open(config)
+    if err != nil {
+        log.Fatalf("Failed to open DB: %v", err)
+    }
+    defer db.Close()
+    
+    // 设置键值对
+    err = db.Put([]byte("hello"), []byte("world"))
+    if err != nil {
+        log.Fatalf("Failed to put: %v", err)
+    }
+    
+    // 获取值
+    value, err := db.Get([]byte("hello"))
+    if err != nil {
+        log.Fatalf("Failed to get: %v", err)
+    }
+    
+    fmt.Printf("Value: %s\n", value)
+    
+    // 删除键
+    err = db.Delete([]byte("hello"))
+    if err != nil {
+        log.Fatalf("Failed to delete: %v", err)
+    }
+}
+```
+
+### 🔄 启动 Redis 兼容服务器
+
+```bash
+bitcask server redis --addr :6379 --data-dir ./data
+```
+
+现在你可以使用任何 Redis 客户端连接到 Bitcask:
+
+```bash
+redis-cli -p 6379
+127.0.0.1:6379> SET mykey "Hello Bitcask"
+OK
+127.0.0.1:6379> GET mykey
+"Hello Bitcask"
+127.0.0.1:6379> EXPIRE mykey 3600
+(integer) 1
+127.0.0.1:6379> TTL mykey
+(integer) 3599
+```
+
+### 🌐 启动 HTTP API 服务器
+
+```bash
+bitcask server http --addr :8080 --data-dir ./data
+```
+
+使用 HTTP 客户端访问:
+
+```bash
+# 设置键值
+curl -X PUT "http://localhost:8080/key/mykey" -H "Content-Type: application/json" -d '{"value":"Hello via HTTP"}'
+
+# 获取键值
+curl "http://localhost:8080/key/mykey"
+```
+
+## 📦 主要模块
+
+Bitcask 由以下主要模块组成:
+
+- [**🧠 inner**](inner/README.md): 核心存储引擎，实现了基本的键值存储功能
+- [**🔄 redis**](redis/README.md): Redis 协议兼容层，实现 Redis 命令和数据结构
+- [**🌐 http**](http/README.md): HTTP RESTful API 服务
+- [**🔄 raft**](raft/README.md): 基于 Raft 算法的分布式共识实现
+- [**🔧 cmd**](cmd/README.md): 命令行工具
+- [**🛠️ tools**](tools/README.md): 测试和开发工具
+
+## 🔍 核心概念
+
+### 📝 数据存储模型
+
+Bitcask 使用追加写入的日志结构来存储数据，具有以下特点:
+
+1. **📝 顺序写入**: 所有写入操作都是顺序追加到当前活跃数据文件
+2. **🧠 内存索引**: 所有键的位置信息保存在内存中，提供O(1)的查找性能
+3. **🔒 不可变文件**: 写满的数据文件成为不可变文件，只进行读取操作
+4. **📔 键目录**: 内存中维护从键到 {file_id, value_position, value_size} 的映射
+5. **🧹 合并操作**: 定期合并数据文件，清理过期和删除的数据
+
+### 📑 数据文件结构
+
+```
++-------------+-------------+-------------+-------------+
+| Record 1    | Record 2    | Record 3    | ...         |
++-------------+-------------+-------------+-------------+
+
+Record:
++--------+--------+------------+-----------+-------+
+| CRC    | Size   | Timestamp  | Key Size  | Key   | Value   |
+| 4 bytes| 4 bytes| 8 bytes    | 4 bytes   | varies| varies  |
++--------+--------+------------+-----------+-------+
+```
+
+### 📝 Hint 文件
+
+为加速启动时的索引重建，Bitcask 支持生成包含键位置信息的 hint 文件。
+
+## ⚡ 性能优化
+
+Bitcask 实现了多项性能优化:
+
+- **📦 批量写入**: 支持批量操作，减少磁盘同步次数
+- **🔍 键索引优化**: 支持 BTree 和 SkipList 两种索引实现
+- **🔄 文件合并策略**: 智能的合并策略，平衡空间利用率和合并频率
+- **🧠 内存映射**: 对只读数据文件采用 mmap 提高读取性能
+- **🔒 并发控制**: 细粒度锁和无锁结构提高并发性能
+- **📝 写前日志**: WAL 确保数据安全性同时提高性能
+
+## 🚀 应用场景
+
+Bitcask 适用于以下场景:
+
+- **⚡ 高吞吐量键值存储**: 适合写入密集型工作负载
+- **👤 会话存储**: 网站会话和用户状态存储
+- **🔄 缓存系统**: 可持久化的缓存系统
+- **📬 消息队列**: 简单的消息队列和任务队列
+- **⚙️ 配置存储**: 分布式系统配置管理
+- **🧩 嵌入式数据库**: 嵌入到其他应用程序中
+
+## ⚠️ 限制
+
+- **🧠 内存使用**: 所有键需驻留在内存中，不适合超大键空间
+- **🔍 范围查询**: 不适合频繁的范围扫描操作
+- **🔄 复杂查询**: 不支持复杂索引和查询
+
+## 👨‍💻 贡献指南
+
+欢迎贡献代码、报告问题或提出功能建议:
+
+1. Fork 项目
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add some amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 创建 Pull Request
+
+## 📜 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+## 🙏 致谢
+
+- Bitcask 论文作者 - 提供了原始设计
+- 所有贡献者和使用者
+
+## 📞 联系方式
+
+- 项目维护者: [Your Name](mailto:your.email@example.com)
+- Twitter: [@yourhandle](https://twitter.com/yourhandle)
+- Blog: [yourblog.com](https://yourblog.com) 

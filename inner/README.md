@@ -1,120 +1,152 @@
-# 🧠 Bitcask 存储引擎内部实现
+# 🧠 Bitcask 核心模块
 
-本目录包含Bitcask存储系统的核心实现代码，包括存储引擎、事务处理、文件管理等核心功能。
+Bitcask 是一个高性能的键值存储引擎，基于日志结构的存储模型，提供了快速的写入和读取操作。这个模块包含了 Bitcask 的核心实现。
 
-## 📁 包结构
+## 🏗️ 架构设计
 
-- **[主包 - inner](./README.md)**: 核心存储引擎实现，处理读写操作、删除、范围查询和事务
-- **[配置 - config](./config/README.md)**: 提供系统配置管理
-- **[索引 - index](./index/README.md)**: 实现内存索引，支持键值查找和范围扫描
-- **[记录 - record](./record/README.md)**: 定义数据记录格式和位置信息
-- **[WAL - wal](./wal/README.md)**: 实现预写日志机制，确保数据持久化
-- **[工具 - utils](./utils/README.md)**: 提供各种辅助功能
+Bitcask 采用简单而高效的设计原则：
+- 所有的**写操作**顺序追加到活跃数据文件中
+- **内存索引**维护所有键到其最新值位置的映射
+- **只读数据文件**存储历史记录，定期合并以回收空间
+- **hint文件**加速重启时的索引构建
 
-## 🔑 核心组件
+## 🧩 核心组件
 
-### 📊 Bitcask 结构体
+### 🚀 存储引擎 (Bitcask)
 
-```go
-type Bitcask struct {
-    conf       *config.Config       // 配置
-    activeWal  *wal.Wal             // 活跃的WAL文件
-    oldWal     map[uint32]*wal.Wal  // 旧的WAL文件
-    memTable   index.Index          // 内存索引
-    fileId     uint32               // 当前文件ID
-    mu         sync.RWMutex         // 互斥锁
-    fileIds    []uint32             // 文件ID列表
-    txnId      atomic.Uint32        // 事务ID
-    comparator *utils.KeyComparator // 键比较器
-}
+存储引擎是核心接口，提供键值存储的基本操作：
+- `Put` - 存储键值对
+- `Get` - 获取键对应的值
+- `Delete` - 删除键值对
+- `Scan` - 扫描所有键值对
+- `Hint` - 生成hint文件
+- `Close` - 安全关闭存储引擎
+
+### ⚙️ 配置 (Config)
+
+提供可配置的选项来自定义 Bitcask 实例的行为：
+- `DataDir` - 数据目录路径
+- `WalDir` - WAL目录名称
+- `HintDir` - hint文件目录名称
+- `IndexType` - 索引类型（BTree或SkipList）
+- `BTreeOrder` - B树的阶数
+- `MaxFileSize` - 数据文件最大大小
+- `BatchSize` - 批处理大小
+- `AutoSync` - 是否自动同步写入
+- `LoadHint` - 是否加载hint文件
+- `Debug` - 调试模式
+
+### 🔍 索引 (Index)
+
+提供键到值位置的高效映射：
+- BTree索引 - 使用Google的btree实现，提供高效的插入、查找和删除操作
+- SkipList索引 - 实现跳表数据结构，提供O(log n)复杂度的操作
+
+### 📁 数据文件 (WAL)
+
+采用日志结构文件：
+- 追加写入 - 所有写操作顺序追加到活跃WAL文件
+- 不可变文件 - 一旦WAL文件达到大小限制，它将变为只读
+- 文件格式 - 简单而高效的二进制格式，包含类型、键长度、值长度、键、值等字段
+
+### 📝 Hint文件
+
+用于加速重启时的索引重建：
+- 存储所有有效键的位置信息
+- 在启动时加载hint文件，避免扫描所有WAL文件
+- 通过`Hint()`命令手动生成
+
+## 📊 数据结构
+
+### 📋 记录格式
+
+每个记录在WAL文件中的存储格式如下：
+```
++---------+-----------+-----------+------+-------+
+| Type(1) | KeyLen(4) | ValLen(4) | Key  | Value |
++---------+-----------+-----------+------+-------+
 ```
 
-### 🔄 批处理事务
+### 🏷️ 记录类型
 
-```go
-type Batch struct {
-    conf  *config.Config    // 配置
-    db    *Bitcask          // 数据库
-    mu    sync.RWMutex      // 互斥锁
-    mp    map[string][]byte // 存储写入的key-value
-    keys  [][]byte          // 存储删除的key
-    txnId uint32            // 事务id
-}
-```
-
-## 📝 主要功能
-
-### 🔑 基本操作
-
-- **创建/打开数据库**: `NewBitcask(config) (*Bitcask, error)`
-- **写入键值对**: `Put(key, value []byte) error`
-- **读取值**: `Get(key []byte) ([]byte, error)`
-- **删除键值对**: `Delete(key []byte) error`
-- **关闭数据库**: `Close() error`
-
-### 🔎 范围查询
-
-- **范围查询(无限制)**: `ScanRange(start, end []byte) ([]*ScanRangeResult, error)`
-- **范围查询(限制数量)**: `ScanRangeLimit(start, end []byte, limit int) ([]*ScanRangeResult, error)`
-- **优化的范围查询**: `ScanRangeOptimized(start, end []byte, limit int) ([]*ScanRangeResult, error)`
-
-范围查询实现采用"先收集后排序"策略：
-1. 使用`KeyComparator`判断键是否在范围内
-2. 收集满足条件的键和值
-3. 按照键比较器的规则对键进行排序
-4. 按顺序构建结果集
-
-### 💼 事务支持
-
-- **创建批处理**: `NewBatch(db *Bitcask) *Batch`
-- **批量写入**: `batch.Put(key, value []byte) error`
-- **批量删除**: `batch.Delete(key []byte) error`
-- **提交事务**: `batch.Commit() error`
-
-### 🧹 维护操作
-
-- **生成索引快照**: `Hint() error`
-- **合并压缩**: `Merge() error`
-- **数据恢复**: `LoadHint() error`
-- **文件轮转**: `tryRotate() error`
+- `0` - 正常记录
+- `1` - 删除标记
 
 ## 🔄 工作流程
 
-1. **启动流程**:
-   - 加载配置
-   - 创建必要的目录
-   - 从Hint文件加载基础索引
-   - 处理WAL文件应用最新更新
-   - 准备活跃的WAL文件
+### ✍️ 写入流程
 
-2. **写入流程**:
-   - 检查文件大小是否需要轮转
-   - 将记录追加到活跃WAL文件
-   - 更新内存索引
-   - 返回成功状态
+1. 将键值对包装为记录格式
+2. 将记录追加到活跃WAL文件
+3. 更新内存索引，指向新写入的记录位置
+4. 如果活跃WAL文件超过大小限制，创建新的活跃文件
 
-3. **读取流程**:
-   - 从内存索引获取记录位置
-   - 根据位置信息从对应WAL文件读取记录
-   - 验证记录有效性
-   - 返回记录值
+### 📖 读取流程
 
-4. **事务流程**:
-   - 在批处理中积累操作
-   - 提交时写入带有事务ID的记录
-   - 写入事务提交标记
-   - 更新系统事务ID计数器
+1. 在内存索引中查找键，获取记录位置（文件ID和偏移量）
+2. 打开对应的WAL文件，定位到记录位置
+3. 读取并解析记录，返回值
 
-5. **合并流程**:
-   - 轮转当前活跃文件
-   - 遍历内存索引中的所有键
-   - 将有效数据重写到新的活跃文件
-   - 删除旧文件并更新索引
+### 🗑️ 删除流程
 
-## 🔧 设计原则
+1. 写入删除标记到WAL文件
+2. 从内存索引中移除键
 
-1. **简单性**: 保持核心实现简单明了
-2. **高性能**: 优化常见操作的性能，利用追加写入和内存索引
-3. **持久性**: 确保写入的数据不会丢失
-4. **可靠性**: 通过WAL和Hint机制确保系统可靠恢复
-5. **并发安全**: 使用适当的锁机制保护共享资源 
+### 🚀 启动流程
+
+1. 尝试加载hint文件构建初始索引
+2. 如果hint文件不存在或加载失败，扫描所有WAL文件重建索引
+3. 从小到大处理WAL文件，确保索引包含最新的记录
+
+## 📝 使用示例
+
+```go
+import (
+    "github.com/aixiasang/bitcask/inner"
+    "github.com/aixiasang/bitcask/inner/config"
+)
+
+// 创建配置
+conf := config.NewConfig()
+conf.DataDir = "./data"
+conf.MaxFileSize = 1024 * 1024 // 1MB
+conf.AutoSync = true
+
+// 创建Bitcask实例
+bc, err := inner.NewBitcask(conf)
+if err != nil {
+    // 处理错误
+}
+defer bc.Close()
+
+// 写入键值对
+err = bc.Put([]byte("key1"), []byte("value1"))
+if err != nil {
+    // 处理错误
+}
+
+// 读取值
+val, err := bc.Get([]byte("key1"))
+if err != nil {
+    // 处理错误
+}
+
+// 删除键
+err = bc.Delete([]byte("key1"))
+if err != nil {
+    // 处理错误
+}
+
+// 生成hint文件，加速下次启动
+err = bc.Hint()
+if err != nil {
+    // 处理错误
+}
+```
+
+## ⚡ 性能优化
+
+- **批处理** - 支持批量写入操作，减少磁盘同步次数
+- **只读映射** - 使用文件的只读内存映射提高读取性能
+- **内存索引** - 全内存索引确保高速查找
+- **顺序写入** - 采用追加写入方式，最大化磁盘写入性能 

@@ -6,12 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aixiasang/bitcask/inner/config"
 	"github.com/aixiasang/bitcask/inner/utils"
+	"github.com/stretchr/testify/assert"
 )
 
 // 测试前的准备工作：创建临时目录
@@ -785,5 +787,79 @@ func TestBitcask_Merge(t *testing.T) {
 	// 关闭Bitcask
 	if err := bc.Close(); err != nil {
 		t.Fatalf("关闭Bitcask失败: %v", err)
+	}
+}
+
+func TestWalFileGeneration(t *testing.T) {
+	// 创建临时目录
+	tmpDir, err := os.MkdirTemp("", "bitcask-wal-test-*")
+	assert.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// 配置Bitcask
+	conf := config.NewConfig()
+	conf.DataDir = tmpDir
+	conf.WalDir = "wal"
+	conf.HintDir = "hint"
+	conf.MaxFileSize = 1024 * 1024 // 1MB
+	conf.AutoSync = true
+	conf.Debug = false
+
+	// 初始化Bitcask
+	bc, err := NewBitcask(conf)
+	assert.NoError(t, err)
+	defer bc.Close()
+
+	// 写入数据
+	keys := []string{
+		"key1", "key2", "key3", "key4", "key5",
+		"key6", "key7", "key8", "key9", "key10",
+	}
+	values := []string{
+		"value1", "value2", "value3", "value4", "value5",
+		"value6", "value7", "value8", "value9", "value10",
+	}
+
+	for i := 0; i < len(keys); i++ {
+		err := bc.Put([]byte(keys[i]), []byte(values[i]))
+		assert.NoError(t, err)
+	}
+
+	// 检查WAL文件是否生成
+	walDir := filepath.Join(tmpDir, "wal")
+	entries, err := os.ReadDir(walDir)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, entries)
+
+	// 检查WAL文件内容
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "wal-") || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+
+		info, err := entry.Info()
+		assert.NoError(t, err)
+		assert.NotZero(t, info.Size(), "WAL文件不应该为空")
+
+		// 读取WAL文件内容
+		filePath := filepath.Join(walDir, entry.Name())
+		data, err := os.ReadFile(filePath)
+		assert.NoError(t, err)
+		assert.NotEmpty(t, data, "WAL文件内容不应该为空")
+	}
+
+	// 重新打开Bitcask验证数据一致性
+	err = bc.Close()
+	assert.NoError(t, err)
+
+	bc2, err := NewBitcask(conf)
+	assert.NoError(t, err)
+	defer bc2.Close()
+
+	// 验证数据被正确恢复
+	for i := 0; i < len(keys); i++ {
+		value, err := bc2.Get([]byte(keys[i]))
+		assert.NoError(t, err)
+		assert.Equal(t, values[i], string(value))
 	}
 }

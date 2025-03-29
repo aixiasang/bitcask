@@ -9,8 +9,10 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/aixiasang/bitcask/http"
 	"github.com/aixiasang/bitcask/inner"
 	"github.com/aixiasang/bitcask/inner/config"
+	"github.com/aixiasang/bitcask/redis"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +36,8 @@ var rootCmd = &cobra.Command{
   bitcask put mykey myvalue --data-dir ./mydata
   bitcask get mykey --data-dir ./mydata
   bitcask delete mykey --data-dir ./mydata
-  bitcask shell --data-dir ./mydata  # 进入交互式模式`,
+  bitcask shell --data-dir ./mydata  # 进入交互式模式
+  bitcask http --addr :8080 --data-dir ./mydata  # 启动HTTP服务`,
 }
 
 // 执行adds所有子命令到根命令并适当设置标志。
@@ -62,6 +65,15 @@ func init() {
 	rootCmd.AddCommand(mergeCmd)
 	rootCmd.AddCommand(hintCmd)
 	rootCmd.AddCommand(shellCmd)
+
+	// 设置scanRange的limit标志
+	scanRangeCmd.Flags().IntVar(&scanLimit, "limit", 100, "最大扫描记录数")
+
+	// 注册HTTP命令
+	http.RegisterCommand(rootCmd, createBitcask, &scanLimit)
+
+	// 注册Redis命令
+	redis.RegisterCommand(rootCmd, createBitcask)
 }
 
 // 创建并配置 Bitcask 实例
@@ -470,9 +482,6 @@ func printShellHelp() {
 	fmt.Println("  Ctrl+C                    - 安全关闭并退出程序")
 }
 
-func init() {
-	scanRangeCmd.Flags().IntVar(&scanLimit, "limit", 100, "最大扫描记录数")
-}
 func main() {
 	Execute()
 }
