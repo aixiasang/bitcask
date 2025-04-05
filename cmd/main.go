@@ -13,6 +13,7 @@ import (
 	"github.com/aixiasang/bitcask/config"
 	"github.com/aixiasang/bitcask/http"
 	"github.com/aixiasang/bitcask/redis"
+	"github.com/aixiasang/bitcask/sql"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +38,9 @@ var rootCmd = &cobra.Command{
   bitcask get mykey --data-dir ./mydata
   bitcask delete mykey --data-dir ./mydata
   bitcask shell --data-dir ./mydata  # 进入交互式模式
-  bitcask http --addr :8080 --data-dir ./mydata  # 启动HTTP服务`,
+  bitcask http --addr :8080 --data-dir ./mydata  # 启动HTTP服务
+  bitcask sql "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"  # 执行SQL语句
+  bitcask sqlshell  # 进入SQL交互式模式`,
 }
 
 // 执行adds所有子命令到根命令并适当设置标志。
@@ -74,6 +77,9 @@ func init() {
 
 	// 注册Redis命令
 	redis.RegisterCommand(rootCmd, createBitcask)
+
+	// 注册SQL命令
+	sql.RegisterCommand(rootCmd, createBitcask)
 }
 
 // 创建并配置 Bitcask 实例

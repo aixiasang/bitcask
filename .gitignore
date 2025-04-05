@@ -32,7 +32,6 @@ Thumbs.db
 *.hint
 *.data
 *.wal
-/wal/
 /hint/
 
 # Binaries
